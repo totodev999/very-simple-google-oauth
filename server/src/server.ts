@@ -2,6 +2,8 @@ import express from 'express';
 import dotenv from 'dotenv';
 import axios from 'axios';
 import cookie from 'cookie-parser';
+import jwt from 'jsonwebtoken';
+import { JwksClient } from 'jwks-rsa';
 
 dotenv.config();
 
@@ -53,15 +55,55 @@ app.get('/api/googleRedirect', async (req, res): Promise<any> => {
 
   const { id_token, access_token } = tokenResponse.data;
 
-  // Decode the ID token to get user info
-  const userInfoResponse = await axios.get(
-    `https://www.googleapis.com/oauth2/v3/tokeninfo?id_token=${id_token}`
-  );
+  // Decode the ID token
+  const decoded = jwt.decode(id_token, { complete: true });
+  if (!decoded || !decoded.header) {
+    return new Error('Invalid token');
+  }
+  console.log('decoded', decoded);
+  const kid = decoded.header.kid;
 
-  console.log('User info response:', userInfoResponse.data);
+  const GOOGLE_JWKS_URI = 'https://www.googleapis.com/oauth2/v3/certs';
+  // If you see the above URL, you will see a list of keys like below.
+  // You can get the public key of the key using n and e values.
+  // But jwks-rsa library will do this for you.
+  // {
+  //   "n": "3zWQqZ_EHrbvwfuq3H7TCBDeanfgxcPxno8GuNQwo5vZQG6hVPqB_NfKNejm2PQG6icoueswY1x-TXdYhn7zuVRrbdiz1Cn2AsUFHhD-FyUipbeXxJPe7dTSQaYwPyzQKNWU_Uj359lXdqXQ_iT-M_QknGTXsf4181r1FTaRMb-89Koj2ZHSHZx-uaPKNzrS92XHoxFXqlMMZYivqEAUE_kAJp-jQ5I5AAQf318zVGPVJX7BxkbcPaM46SZNJaD0ya7uhKWwluqgSjHkOObI5bbq9LmV3N51jzPgxGrH2OEeQBCXzggYzjMVlNuUnfQbNKvF3Xqc4HHWXulDsszGRQ",
+  //   "kty": "RSA",
+  //   "use": "sig",
+  //   "kid": "1dc0f172e8d6ef382d6d3a231f6c197dd68ce5ef",
+  //   "e": "AQAB",
+  //   "alg": "RS256"
+  // }
 
-  const user = userInfoResponse.data;
-  return res.json(user);
+  const client = new JwksClient({
+    jwksUri: GOOGLE_JWKS_URI,
+    requestHeaders: {}, // Optional
+    timeout: 30000, // Defaults to 30s
+  });
+  const getKeyRes = await client.getSigningKey(kid);
+  console.log('getKeyRes', getKeyRes, getKeyRes.getPublicKey());
+
+  try {
+    // replace the last character of the token. This will make the token invalid.
+    // const fakeToken = (id_token as string).substring(0, (id_token as string).length - 1) + '_';
+
+    // If signature is valid, the token is valid
+    const verifiedToken = jwt.verify(id_token, getKeyRes.getPublicKey(), {
+      complete: true,
+    });
+    console.log('verifiedToken', verifiedToken);
+
+    // google offers a tokeninfo endpoint to verify id_token
+    // const userInfoResponse = await axios.get(
+    //   `https://www.googleapis.com/oauth2/v3/tokeninfo?id_token=${id_token}`
+    // );
+    // console.log('User info response:', userInfoResponse.data);
+
+    return res.json(verifiedToken.payload);
+  } catch (err) {
+    console.log(err);
+  }
 });
 
 export default app;
